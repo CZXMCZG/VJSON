@@ -1,0 +1,32 @@
+name: Node Hunter Auto Run
+
+on:
+  schedule:
+    - cron: '*/15 * * * *' # 每 xx 分钟自动运行一次
+  workflow_dispatch:      # 允许你手动点击按钮运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Install Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install httpx
+
+      - name: Run Hunter
+        run: python private_hunter.py
+
+      - name: Push Results
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Action"
+          git add nodes.json
+          git commit -m "Update nodes [$(date)]" || exit 0
+          git push
