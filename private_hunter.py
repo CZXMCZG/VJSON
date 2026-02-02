@@ -21,6 +21,9 @@ HUNTER_SOURCES = [
 ENCRYPTION_KEY = "ODK-VPN-2026-SECRET-KEY"
 ENABLE_ENCRYPTION = True
 
+# 目标地区（只爬取这些地区的节点）
+TARGET_REGIONS = ['HK', 'TW', 'JP', 'SG']  # 香港、台湾、日本、新加坡
+
 # 地理位置映射
 LOCATION_KEYWORDS = {
     'hk': {'country': '香港', 'countryCode': 'HK'},
@@ -32,25 +35,6 @@ LOCATION_KEYWORDS = {
     'singapore': {'country': '新加坡', 'countryCode': 'SG'},
     'jp': {'country': '日本', 'countryCode': 'JP'},
     'japan': {'country': '日本', 'countryCode': 'JP'},
-    'kr': {'country': '韩国', 'countryCode': 'KR'},
-    'korea': {'country': '韩国', 'countryCode': 'KR'},
-    'us': {'country': '美国', 'countryCode': 'US'},
-    'usa': {'country': '美国', 'countryCode': 'US'},
-    'united states': {'country': '美国', 'countryCode': 'US'},
-    'uk': {'country': '英国', 'countryCode': 'GB'},
-    'united kingdom': {'country': '英国', 'countryCode': 'GB'},
-    'de': {'country': '德国', 'countryCode': 'DE'},
-    'germany': {'country': '德国', 'countryCode': 'DE'},
-    'ca': {'country': '加拿大', 'countryCode': 'CA'},
-    'canada': {'country': '加拿大', 'countryCode': 'CA'},
-    'au': {'country': '澳大利亚', 'countryCode': 'AU'},
-    'australia': {'country': '澳大利亚', 'countryCode': 'AU'},
-    'fr': {'country': '法国', 'countryCode': 'FR'},
-    'france': {'country': '法国', 'countryCode': 'FR'},
-    'nl': {'country': '荷兰', 'countryCode': 'NL'},
-    'netherlands': {'country': '荷兰', 'countryCode': 'NL'},
-    'ru': {'country': '俄罗斯', 'countryCode': 'RU'},
-    'russia': {'country': '俄罗斯', 'countryCode': 'RU'},
 }
 
 # 云服务商识别
@@ -120,6 +104,10 @@ def parse_vmess(url: str) -> Optional[Dict]:
         # 推测地理位置
         location = guess_location(name + ' ' + host)
         
+        # 只保留目标地区的节点
+        if location['countryCode'] not in TARGET_REGIONS:
+            return None
+        
         # 检测提供商
         provider = detect_provider(host)
         is_premium = provider is not None
@@ -147,7 +135,7 @@ def parse_vmess(url: str) -> Optional[Dict]:
             'isPremium': is_premium,
             'tags': ['hunter', 'vmess'],
         }
-    except Exception as e:
+    except:
         return None
 
 
@@ -164,6 +152,10 @@ def parse_trojan(url: str) -> Optional[Dict]:
         
         # 推测地理位置
         location = guess_location(name + ' ' + host)
+        
+        # 只保留目标地区的节点
+        if location['countryCode'] not in TARGET_REGIONS:
+            return None
         
         # 检测提供商
         provider = detect_provider(host)
@@ -197,7 +189,7 @@ def parse_trojan(url: str) -> Optional[Dict]:
             'isPremium': is_premium,
             'tags': ['hunter', 'trojan'],
         }
-    except Exception as e:
+    except:
         return None
 
 
@@ -214,6 +206,10 @@ def parse_vless(url: str) -> Optional[Dict]:
         
         # 推测地理位置
         location = guess_location(name + ' ' + host)
+        
+        # 只保留目标地区的节点
+        if location['countryCode'] not in TARGET_REGIONS:
+            return None
         
         # 检测提供商
         provider = detect_provider(host)
@@ -248,7 +244,7 @@ def parse_vless(url: str) -> Optional[Dict]:
             'isPremium': is_premium,
             'tags': ['hunter', 'vless'],
         }
-    except Exception as e:
+    except:
         return None
 
 
@@ -275,6 +271,10 @@ def parse_shadowsocks(url: str) -> Optional[Dict]:
         # 推测地理位置
         location = guess_location(name + ' ' + host)
         
+        # 只保留目标地区的节点
+        if location['countryCode'] not in TARGET_REGIONS:
+            return None
+        
         # 检测提供商
         provider = detect_provider(host)
         is_premium = provider is not None
@@ -296,7 +296,7 @@ def parse_shadowsocks(url: str) -> Optional[Dict]:
             'isPremium': is_premium,
             'tags': ['hunter', 'shadowsocks'],
         }
-    except Exception as e:
+    except:
         return None
 
 
@@ -314,7 +314,7 @@ def parse_node(url: str) -> Optional[Dict]:
 
 
 async def check_node_quality(node_data: Dict) -> Optional[Dict]:
-    """检查节点质量"""
+    """检查节点质量（静默模式）"""
     try:
         config = node_data['config']
         host = config.get('add', config.get('host', config.get('server', '')))
@@ -353,18 +353,18 @@ async def check_node_quality(node_data: Dict) -> Optional[Dict]:
             score += 0.2
         elif latency < 200:
             score += 0.1
-        if node_data['countryCode'] in ['HK', 'TW', 'SG', 'JP']:
+        if node_data['countryCode'] in TARGET_REGIONS:
             score += 0.1
         
         node_data['score'] = min(score, 1.0)
         
         return node_data
-    except Exception as e:
+    except:
         return None
 
 
 async def main():
-    
+    """主函数（静默模式）"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
@@ -372,7 +372,7 @@ async def main():
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
         all_content = ""
         
-        # 获取所有源的内容
+        # 获取所有源的内容（静默）
         for url in HUNTER_SOURCES:
             try:
                 r = await client.get(url)
@@ -386,7 +386,7 @@ async def main():
                             except:
                                 break
                     all_content += text + "\n"
-            except Exception as e:
+            except:
                 continue
         
         # 提取所有节点URL
@@ -395,7 +395,7 @@ async def main():
         if not node_urls:
             return
         
-        # 解析节点
+        # 解析节点（只保留目标地区）
         parsed_nodes = []
         for url in node_urls:
             node_data = parse_node(url)
@@ -451,6 +451,7 @@ async def main():
         # 保存文件
         with open('nodes.json', 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
