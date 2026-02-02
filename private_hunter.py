@@ -3,11 +3,10 @@ import httpx
 import base64
 import re
 import json
-import os
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import unquote
 from typing import Dict, List, Optional
 
-# 节点来源
+# --- 配置区 ---
 HUNTER_SOURCES = [
     "https://raw.githubusercontent.com/freefq/free/master/v2",
     "https://raw.githubusercontent.com/zufuli/proxypool/master/proxypool/resources/sources.txt",
@@ -17,39 +16,28 @@ HUNTER_SOURCES = [
     "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray"
 ]
 
-# 加密配置
 ENCRYPTION_KEY = "ODK-VPN-2026-SECRET-KEY"
 ENABLE_ENCRYPTION = True
 
-# 目标地区白名单（只有匹配到这些才保留）
+# 严格白名单：只允许这四个 Code 导出
 TARGET_REGIONS = ['HK', 'TW', 'JP', 'SG']
 
-# 增强版地理位置映射（增加排除名单以提高过滤准确度）
-LOCATION_MAP = {
-    'HK': {'keywords': ['hk', 'hongkong', 'hong kong', '香港', '港'], 'name': '香港'},
-    'TW': {'keywords': ['tw', 'taiwan', 'tai wan', '台湾', '台'], 'name': '台湾'},
-    'JP': {'keywords': ['jp', 'japan', 'tokyo', 'osaka', '日本', '日', '东京', '大阪'], 'name': '日本'},
-    'SG': {'keywords': ['sg', 'singapore', '新加坡', '新', '狮城'], 'name': '新加坡'},
-    # 显式定义的黑名单（匹配到这些直接打上排除标记）
-    'US': {'keywords': ['us', 'united states', 'america', 'usa', '美国', '美'], 'name': '美国'},
-    'UK': {'keywords': ['uk', 'united kingdom', 'britain', '英国', '英'], 'name': '英国'},
-    'KR': {'keywords': ['kr', 'korea', 'seoul', '韩国', '韩', '首尔'], 'name': '韩国'},
+# 地理识别库：增加黑名单拦截和中英文精准匹配
+GEO_RULES = {
+    'HK': ['hk', 'hongkong', 'hong kong', '香港', '港', '🇭🇰'],
+    'TW': ['tw', 'taiwan', 'tai wan', '台湾', '台', '🇹🇼'],
+    'JP': ['jp', 'japan', 'tokyo', 'osaka', '日本', '日', '东京', '大阪', '🇯🇵'],
+    'SG': ['sg', 'singapore', '新加坡', '新', '狮城', '🇸🇬'],
 }
 
-# 云服务商识别
-CLOUD_PROVIDERS = {
-    'aws': 'Amazon AWS',
-    'azure': 'Microsoft Azure',
-    'oracle': 'Oracle Cloud',
-    'google': 'Google Cloud',
-    'digitalocean': 'DigitalOcean',
-    'vultr': 'Vultr',
-    'linode': 'Linode',
-    'cloudflare': 'Cloudflare',
-}
+# 强效黑名单：只要包含这些词，哪怕有 HK 关键词也直接剔除
+BLOCK_WORDS = ['us', 'usa', 'united states', 'america', '美国', '美', '🇺🇸', 
+               'uk', 'united kingdom', '英国', '英', '🇬🇧',
+               'kr', 'korea', '韩国', '韩', '🇰🇷',
+               'de', 'germany', '德国', '德', '🇩🇪',
+               'ru', 'russia', '俄罗斯', '🇷🇺']
 
 def xor_encrypt(data: str, key: str) -> str:
-    """XOR加密"""
     data_bytes = data.encode('utf-8')
     key_bytes = key.encode('utf-8')
     result = bytearray()
@@ -57,164 +45,134 @@ def xor_encrypt(data: str, key: str) -> str:
         result.append(data_bytes[i] ^ key_bytes[i % len(key_bytes)])
     return base64.b64encode(result).decode('utf-8')
 
-def guess_location(ps_name: str, host: str) -> Dict[str, str]:
+def get_region_code(ps: str, host: str) -> Optional[str]:
     """
-    改进的地理位置推测：
-    1. 备注名(ps)优先级最高
-    2. 使用正则单词边界匹配，防止误判
-    3. 只要不在 TARGET_REGIONS 内，统一返回 OTHER
+    高精度地区识别引擎
     """
-    search_text = f"{ps_name} {host}".lower()
-    
-    # 按照目标地区循环匹配
-    for code, info in LOCATION_MAP.items():
-        for kw in info['keywords']:
-            # 使用正则 \b 匹配独立单词或中文关键词直接匹配
-            pattern = r'\b' + re.escape(kw) + r'\b'
-            if re.search(pattern, search_text) or (re.search(r'[\u4e00-\u9fa5]', kw) and kw in search_text):
-                return {'country': info['name'], 'countryCode': code}
-    
-    return {'country': 'Other', 'countryCode': 'OTHER'}
+    text = f"{ps} {host}".lower()
 
-def detect_provider(host: str) -> Optional[str]:
-    """检测云服务商"""
-    host_lower = host.lower()
-    for keyword, provider in CLOUD_PROVIDERS.items():
-        if keyword in host_lower: return provider
+    # 1. 强效黑名单拦截：防止 US-HK 这种混合命名的节点混入
+    for block in BLOCK_WORDS:
+        # \b 匹配独立单词，防止误杀域名里的字母
+        if re.search(r'\b' + re.escape(block) + r'\b', text) or block in text:
+            # 如果包含黑名单词，直接判定无效
+            return None
+
+    # 2. 白名单精准匹配
+    for code, keywords in GEO_RULES.items():
+        for kw in keywords:
+            # 匹配逻辑：独立单词 或 中文字符直接包含
+            if re.search(r'\b' + re.escape(kw) + r'\b', text) or (re.search(r'[\u4e00-\u9fa5]', kw) and kw in text):
+                return code
+    
     return None
 
 def parse_vmess(url: str) -> Optional[Dict]:
-    """解析VMESS节点"""
     try:
         encoded = url.replace('vmess://', '')
+        # 补齐 base64 填充
+        missing_padding = len(encoded) % 4
+        if missing_padding: encoded += '=' * (4 - missing_padding)
+        
         decoded = base64.b64decode(encoded).decode('utf-8')
         config = json.loads(decoded)
         
-        host = config.get('add', config.get('host', ''))
-        name = config.get('ps', config.get('remarks', ''))
+        host = config.get('add', '')
+        ps = config.get('ps', '')
         
-        # 严格过滤地区
-        location = guess_location(name, host)
-        if location['countryCode'] not in TARGET_REGIONS:
-            return None
-        
-        provider = detect_provider(host)
+        # 核心过滤：识别不到指定地区的直接丢弃
+        region = get_region_code(ps, host)
+        if not region: return None
+
         return {
             'id': f'vmess_{hash(url) % 1000000}',
-            'name': name or f"VMESS-{location['country']}",
-            'country': location['country'],
-            'countryCode': location['countryCode'],
+            'name': ps or f"{region}-VMESS",
+            'countryCode': region,
             'protocol': 'vmess',
             'configUrl': url,
             'config': {
                 'add': host, 'port': str(config.get('port', 443)),
-                'id': config.get('id', ''), 'aid': str(config.get('aid', 0)),
-                'net': config.get('net', 'tcp'), 'tls': config.get('tls', ''),
-                'path': config.get('path', '/'), 'sni': config.get('sni', '')
-            },
-            'provider': provider,
-            'isPremium': provider is not None,
-            'tags': ['hunter', 'vmess'],
+                'id': config.get('id', ''), 'net': config.get('net', 'tcp'),
+                'tls': config.get('tls', ''), 'path': config.get('path', '/')
+            }
         }
     except: return None
 
 def parse_trojan(url: str) -> Optional[Dict]:
-    """解析TROJAN节点"""
     try:
         match = re.match(r'trojan://([^@]+)@([^:]+):(\d+)(\?[^#]*)?(#(.*))?', url)
         if not match: return None
-        password, host, port, params, _, name = match.groups()
-        name = unquote(name) if name else ""
+        _, host, port, _, _, name = match.groups()
+        ps = unquote(name) if name else ""
         
-        location = guess_location(name, host)
-        if location['countryCode'] not in TARGET_REGIONS: return None
-        
-        provider = detect_provider(host)
+        region = get_region_code(ps, host)
+        if not region: return None
+
         return {
             'id': f'trojan_{hash(url) % 1000000}',
-            'name': name or f"TROJAN-{location['country']}",
-            'country': location['country'],
-            'countryCode': location['countryCode'],
+            'name': ps or f"{region}-TROJAN",
+            'countryCode': region,
             'protocol': 'trojan',
             'configUrl': url,
-            'config': {'add': host, 'port': port, 'password': password},
-            'provider': provider,
-            'isPremium': provider is not None,
-            'tags': ['hunter', 'trojan'],
+            'config': {'add': host, 'port': port}
         }
     except: return None
 
-def parse_node(url: str) -> Optional[Dict]:
-    """解析节点入口"""
-    if url.startswith('vmess://'): return parse_vmess(url)
-    if url.startswith('trojan://'): return parse_trojan(url)
-    # VLESS 和 SS 的逻辑同理，需确保内部调用 guess_location 并拦截非目标地区
-    return None
-
-async def check_node_quality(node_data: Dict) -> Optional[Dict]:
-    """检查节点连接性"""
+async def check_latency(node: Dict) -> Optional[Dict]:
     try:
-        config = node_data['config']
-        host = config.get('add', config.get('host', ''))
-        port = int(config.get('port', 443))
-        
+        host = node['config']['add']
+        port = int(node['config']['port'])
         start = asyncio.get_event_loop().time()
-        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.5)
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
         writer.close()
         await writer.wait_closed()
-        
-        latency = int((asyncio.get_event_loop().time() - start) * 1000)
-        node_data['latency'] = latency
-        # 简易评分逻辑
-        node_data['score'] = max(0.1, 1.0 - (latency / 2500)) 
-        return node_data
+        node['latency'] = int((asyncio.get_event_loop().time() - start) * 1000)
+        return node
     except: return None
 
 async def main():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
-        all_content = ""
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as client:
+        print("正在抓取源...")
+        raw_urls = []
         for url in HUNTER_SOURCES:
             try:
-                r = await client.get(url)
-                if r.status_code == 200:
-                    text = r.text
-                    # 自动处理Base64订阅格式
-                    if "://" not in text[:50]:
-                        try: text = base64.b64decode(text).decode('utf-8')
-                        except: pass
-                    all_content += text + "\n"
+                res = await client.get(url)
+                content = res.text
+                if "://" not in content[:50]:
+                    try: content = base64.b64decode(content).decode('utf-8')
+                    except: pass
+                raw_urls.extend(re.findall(r'(?:vmess|trojan)://[^\s]+', content))
             except: continue
-        
-        node_urls = list(set(re.findall(r'(?:vmess|trojan)://[^\s]+', all_content)))
-        if not node_urls: return
 
-        # 解析并过滤地区
-        parsed_nodes = [n for n in [parse_node(u) for u in node_urls] if n]
+        # 1. 唯一化并解析（执行地区过滤）
+        parsed_nodes = []
+        for u in list(set(raw_urls)):
+            node = parse_vmess(u) if u.startswith('vmess://') else parse_trojan(u)
+            if node: parsed_nodes.append(node)
         
-        # 质量检测
-        tasks = [check_node_quality(node) for node in parsed_nodes]
+        print(f"解析到目标地区节点: {len(parsed_nodes)} 个，开始测速...")
+
+        # 2. 测速
+        tasks = [check_latency(n) for n in parsed_nodes]
         results = await asyncio.gather(*tasks)
         valid_nodes = [r for r in results if r]
         
-        # 排序并截取
-        valid_nodes.sort(key=lambda x: (-x['isPremium'], x['latency']))
-        final_nodes = valid_nodes[:50]
-        
-        # 准备输出
+        # 3. 排序截取前 50
+        valid_nodes.sort(key=lambda x: x['latency'])
+        final_list = valid_nodes[:50]
+
+        # 4. 导出
+        json_data = json.dumps(final_list, ensure_ascii=False)
         output = {
-            "data": xor_encrypt(json.dumps(final_nodes, ensure_ascii=False), ENCRYPTION_KEY) if ENABLE_ENCRYPTION else base64.b64encode(json.dumps(final_nodes).encode()).decode(),
-            "timestamp": str(asyncio.get_event_loop().time()),
-            "count": len(final_nodes),
-            "encrypted": ENABLE_ENCRYPTION,
-            "stats": {
-                "by_country": {c: sum(1 for n in final_nodes if n['countryCode'] == c) for c in TARGET_REGIONS}
-            }
+            "data": xor_encrypt(json_data, ENCRYPTION_KEY) if ENABLE_ENCRYPTION else base64.b64encode(json_data.encode()).decode(),
+            "count": len(final_list),
+            "timestamp": str(asyncio.get_event_loop().time())
         }
         
         with open('nodes.json', 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
-        print(f"爬取完成，有效节点数: {len(final_nodes)}")
+        print(f"成功导出 {len(final_list)} 个节点到 nodes.json")
 
 if __name__ == "__main__":
     asyncio.run(main())
