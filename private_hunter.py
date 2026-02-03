@@ -1,114 +1,3 @@
-import asyncio
-import httpx
-import base64
-import re
-import json
-import random
-import time
-from urllib.parse import unquote, quote
-from typing import Dict, List, Optional
-
-# --- 防封配置区 ---
-# 使用 jsDelivr 镜像替代原始 GitHub 链接，绕过封锁
-def mirror_url(url: str) -> str:
-    if "raw.githubusercontent.com" in url:
-        # 将 raw 链接转换为 jsdelivr 镜像链接
-        parts = url.replace("https://raw.githubusercontent.com/", "").split("/")
-        if len(parts) >= 3:
-            user, repo, branch = parts[0], parts[1], parts[2]
-            path = "/".join(parts[3:])
-            return f"https://fastly.jsdelivr.net/gh/{user}/{repo}@{branch}/{path}"
-    return url
-
-RAW_SOURCES = [
-    "https://raw.githubusercontent.com/tiamm/free-nodes/main/nodes.txt",
-    "https://raw.githubusercontent.com/anaer/Sub/main/clash.yaml",
-    "https://raw.githubusercontent.com/mbelousov7/v2ray-nodes/main/nodes.txt",
-    "https://raw.githubusercontent.com/rxsweet/all/main/all",
-    "https://raw.githubusercontent.com/snakem982/proxypool/main/source/all.txt"
-]
-
-HUNTER_SOURCES = [mirror_url(url) for url in RAW_SOURCES]
-ENCRYPTION_KEY = "ODK-VPN-2026-SECRET-KEY"
-ENABLE_ENCRYPTION = True
-
-# 地区与黑名单逻辑保持不变
-GEO_RULES = {
-    'HK': ['hk', 'hongkong', '香港', '港', '广港', '沪港', '深港', 'IEPL'],
-    'TW': ['tw', 'taiwan', '台湾', '台', '🇹🇼'],
-    'JP': ['jp', 'japan', 'tokyo', '日本', '日', '🇯🇵'],
-    'SG': ['sg', 'singapore', '新加坡', '新', '🇸🇬'],
-}
-
-BLOCK_WORDS = ['us', 'america', '美国', 'uk', '英国', 'kr', '韩国', 'de', '德国', 'ru', '俄罗斯']
-
-# UA 池，模拟不同设备
-UA_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
-]
-
-def xor_encrypt(data: str, key: str) -> str:
-    data_bytes, key_bytes = data.encode('utf-8'), key.encode('utf-8')
-    result = bytearray(b1 ^ key_bytes[i % len(key_bytes)] for i, b1 in enumerate(data_bytes))
-    return base64.b64encode(result).decode('utf-8')
-
-async def fetch_with_retry(client, url):
-    """带抖动和退避的抓取逻辑"""
-    for i in range(3):  # 最多重试 3 次
-        try:
-            # 随机延迟，模拟真实行为
-            await asyncio.sleep(random.uniform(0.5, 2.0))
-            headers = {"User-Agent": random.choice(UA_POOL)}
-            res = await client.get(url, headers=headers, timeout=10.0)
-            if res.status_code == 200:
-                return res.text
-            elif res.status_code == 429:  # 被限流
-                await asyncio.sleep(5 * (i + 1))
-        except:
-            continue
-    return ""
-
-def get_region_code(ps: str, host: str) -> Optional[str]:
-    text = f"{ps} {host}".lower()
-    if any(block in text for block in BLOCK_WORDS):
-        return None
-    for code, keywords in GEO_RULES.items():
-        if any(kw.lower() in text for kw in keywords):
-            return code
-    return None
-
-def parse_vmess(url: str) -> Optional[Dict]:
-    try:
-        encoded = url.replace('vmess://', '').strip()
-        padding = len(encoded) % 4
-        if padding:
-            encoded += '=' * (4 - padding)
-        config = json.loads(base64.b64decode(encoded).decode('utf-8'))
-        region = get_region_code(config.get('ps', ''), config.get('add', ''))
-        if not region:
-            return None
-        return {
-            'id': f'vmess_{hash(url) % 1000000}',
-            'name': config.get('ps', ''),
-            'country': region,
-            'countryCode': region,
-            'protocol': 'vmess',
-            'configUrl': url,
-            'config': {
-                'add': config.get('add', ''),
-                'port': str(config.get('port', 443)),
-                'id': config.get('id', ''),
-                'net': config.get('net', 'tcp'),
-                'tls': config.get('tls', ''),
-                'path': config.get('path', '/')
-            }
-        }
-    except:
-        return None
-
 async def main():
     async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
         print("启动分布式避雷抓取模式...")
@@ -119,54 +8,78 @@ async def main():
             if not content:
                 continue
             
-            # 基础协议提取
-            found = re.findall(r'(?:vmess|vless|trojan|ss|ssr|hysteria2|hy2)://[^\s|#|"]+', content)
+            # --- 逻辑增强：自动识别并处理 Base64 编码的源 ---
+            # 很多源会把所有节点打包成一个 Base64 字符串
+            effective_content = content
+            if not re.search(r'://', content) and len(content) > 32:
+                try:
+                    # 尝试清理空白符后解码
+                    decoded = base64.b64decode(content.strip()).decode('utf-8')
+                    effective_content += "\n" + decoded
+                except:
+                    pass
+
+            # 基础协议提取 - 增加对更多协议和格式的兼容
+            # 修改正则，防止某些源在 URL 中包含特殊字符导致断开
+            found = re.findall(r'(?:vmess|vless|trojan|ss|ssr|hysteria2|hy2)://[^\s|#|"\']+', effective_content)
             raw_urls.extend(found)
             
-            # 子链探测（捡漏付费订阅）
-            subs = re.findall(r'https?://[^\s]+\b(?:sub|subscribe|link|token=)[^\s]+', content)
-            for s in subs[:3]:
-                # 转换器中转，进一步隐藏真实意图
+            # 子链探测 - 修正正则以匹配更多订阅格式
+            subs = re.findall(r'https?://[^\s\'"]+(?:sub|subscribe|link|token=)[^\s\'"]+', effective_content)
+            for s in subs[:5]: # 稍微增加探测深度
+                # 转换器中转
                 conv_url = f"https://api.v1.mk/sub?target=v2ray&url={quote(s)}"
                 sub_content = await fetch_with_retry(client, conv_url)
                 if sub_content:
                     try:
-                        decoded = base64.b64decode(sub_content).decode('utf-8')
-                        raw_urls.extend(re.findall(r'(?:vmess|vless|trojan|ss|ssr)://[^\s|#|"]+', decoded))
+                        # 转换器返回的基本都是 Base64
+                        decoded_sub = base64.b64decode(sub_content).decode('utf-8', errors='ignore')
+                        raw_urls.extend(re.findall(r'(?:vmess|vless|trojan|ss|ssr)://[^\s|#|"\']+', decoded_sub))
                     except:
-                        pass
+                        # 如果不是 Base64，直接尝试正则
+                        raw_urls.extend(re.findall(r'(?:vmess|vless|trojan|ss|ssr)://[^\s|#|"\']+', sub_content))
         
         parsed_nodes = []
-        for u in list(set(raw_urls)):
+        unique_raw = list(set(raw_urls))
+        print(f"原始链接去重后共: {len(unique_raw)} 条，开始解析有效性...")
+
+        for u in unique_raw:
+            node = None
             if u.startswith('vmess://'):
                 node = parse_vmess(u)
             else:
-                # 简易通用解析
-                ps = unquote(u.split('#')[-1]) if '#' in u else ""
-                host_match = re.search(r'@([^:/#\?\s]+)', u)
-                host = host_match.group(1) if host_match else ""
-                region = get_region_code(ps, host)
-                if region:
-                    node = {
-                        'id': f'node_{hash(u) % 1000000}',
-                        'name': ps,
-                        'country': region,
-                        'countryCode': region,
-                        'protocol': u.split('://')[0],
-                        'configUrl': u,
-                        'config': {'add': host, 'port': '443'}
-                    }
-                    parsed_nodes.append(node)
+                # 增强型通用解析
+                try:
+                    # 提取协议头
+                    proto = u.split('://')[0]
+                    # 处理名称 ps
+                    ps = unquote(u.split('#')[-1]) if '#' in u else "Unnamed"
+                    # 提取主机地址
+                    host = ""
+                    if '@' in u:
+                        host_part = u.split('@')[1].split(':')[0].split('/')[0]
+                        host = host_part
+                    
+                    region = get_region_code(ps, host)
+                    if region:
+                        node = {
+                            'id': f'node_{hash(u) % 1000000}',
+                            'name': ps,
+                            'country': region,
+                            'countryCode': region,
+                            'protocol': proto,
+                            'configUrl': u,
+                            'config': {'add': host, 'port': '443'}
+                        }
+                except:
                     continue
-                else:
-                    node = None
             
             if node:
                 parsed_nodes.append(node)
         
-        print(f"安全获取到节点: {len(parsed_nodes)} 个")
+        print(f"安全获取到有效节点: {len(parsed_nodes)} 个")
         
-        # 导出 nodes.json
+        # 导出 nodes.json (这部分保持原样)
         output = {
             "data": xor_encrypt(json.dumps(parsed_nodes, ensure_ascii=False), ENCRYPTION_KEY) if ENABLE_ENCRYPTION else base64.b64encode(json.dumps(parsed_nodes, ensure_ascii=False).encode()).decode(),
             "count": len(parsed_nodes),
@@ -179,7 +92,3 @@ async def main():
             json.dump(output, f, ensure_ascii=False, indent=2)
         
         print(f"✅ 已导出到 nodes.json")
-        print(f"加密状态: {'已加密(XOR)' if ENABLE_ENCRYPTION else '仅Base64编码'}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
