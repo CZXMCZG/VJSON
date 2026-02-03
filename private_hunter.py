@@ -4,6 +4,7 @@ import base64
 import re
 import json
 import random
+import time
 from urllib.parse import unquote, quote
 from typing import Dict, List, Optional
 
@@ -16,7 +17,7 @@ def mirror_url(url: str) -> str:
         if len(parts) >= 3:
             user, repo, branch = parts[0], parts[1], parts[2]
             path = "/".join(parts[3:])
-            return f"https://fastly.jsdelivr.net/gh/{user}@{repo}@{branch}/{path}"
+            return f"https://fastly.jsdelivr.net/gh/{user}/{repo}@{branch}/{path}"
     return url
 
 RAW_SOURCES = [
@@ -28,7 +29,6 @@ RAW_SOURCES = [
 ]
 
 HUNTER_SOURCES = [mirror_url(url) for url in RAW_SOURCES]
-
 ENCRYPTION_KEY = "ODK-VPN-2026-SECRET-KEY"
 ENABLE_ENCRYPTION = True
 
@@ -39,6 +39,7 @@ GEO_RULES = {
     'JP': ['jp', 'japan', 'tokyo', '日本', '日', '🇯🇵'],
     'SG': ['sg', 'singapore', '新加坡', '新', '🇸🇬'],
 }
+
 BLOCK_WORDS = ['us', 'america', '美国', 'uk', '英国', 'kr', '韩国', 'de', '德国', 'ru', '俄罗斯']
 
 # UA 池，模拟不同设备
@@ -56,16 +57,15 @@ def xor_encrypt(data: str, key: str) -> str:
 
 async def fetch_with_retry(client, url):
     """带抖动和退避的抓取逻辑"""
-    for i in range(3): # 最多重试 3 次
+    for i in range(3):  # 最多重试 3 次
         try:
             # 随机延迟，模拟真实行为
-            await asyncio.sleep(random.uniform(0.5, 2.0)) 
+            await asyncio.sleep(random.uniform(0.5, 2.0))
             headers = {"User-Agent": random.choice(UA_POOL)}
             res = await client.get(url, headers=headers, timeout=10.0)
-            
             if res.status_code == 200:
                 return res.text
-            elif res.status_code == 429: # 被限流
+            elif res.status_code == 429:  # 被限流
                 await asyncio.sleep(5 * (i + 1))
         except:
             continue
@@ -73,26 +73,41 @@ async def fetch_with_retry(client, url):
 
 def get_region_code(ps: str, host: str) -> Optional[str]:
     text = f"{ps} {host}".lower()
-    if any(block in text for block in BLOCK_WORDS): return None
+    if any(block in text for block in BLOCK_WORDS):
+        return None
     for code, keywords in GEO_RULES.items():
-        if any(kw.lower() in text for kw in keywords): return code
+        if any(kw.lower() in text for kw in keywords):
+            return code
     return None
 
 def parse_vmess(url: str) -> Optional[Dict]:
     try:
         encoded = url.replace('vmess://', '').strip()
         padding = len(encoded) % 4
-        if padding: encoded += '=' * (4 - padding)
+        if padding:
+            encoded += '=' * (4 - padding)
         config = json.loads(base64.b64decode(encoded).decode('utf-8'))
         region = get_region_code(config.get('ps', ''), config.get('add', ''))
-        if not region: return None
+        if not region:
+            return None
         return {
             'id': f'vmess_{hash(url) % 1000000}',
             'name': config.get('ps', ''),
-            'countryCode': region, 'protocol': 'vmess', 'configUrl': url,
-            'config': {'add': config.get('add', ''), 'port': str(config.get('port', 443)), 'id': config.get('id', ''), 'net': config.get('net', 'tcp'), 'tls': config.get('tls', ''), 'path': config.get('path', '/')}
+            'country': region,
+            'countryCode': region,
+            'protocol': 'vmess',
+            'configUrl': url,
+            'config': {
+                'add': config.get('add', ''),
+                'port': str(config.get('port', 443)),
+                'id': config.get('id', ''),
+                'net': config.get('net', 'tcp'),
+                'tls': config.get('tls', ''),
+                'path': config.get('path', '/')
+            }
         }
-    except: return None
+    except:
+        return None
 
 async def main():
     async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
@@ -101,7 +116,8 @@ async def main():
         
         for url in HUNTER_SOURCES:
             content = await fetch_with_retry(client, url)
-            if not content: continue
+            if not content:
+                continue
             
             # 基础协议提取
             found = re.findall(r'(?:vmess|vless|trojan|ss|ssr|hysteria2|hy2)://[^\s|#|"]+', content)
@@ -117,30 +133,53 @@ async def main():
                     try:
                         decoded = base64.b64decode(sub_content).decode('utf-8')
                         raw_urls.extend(re.findall(r'(?:vmess|vless|trojan|ss|ssr)://[^\s|#|"]+', decoded))
-                    except: pass
-
+                    except:
+                        pass
+        
         parsed_nodes = []
         for u in list(set(raw_urls)):
             if u.startswith('vmess://'):
                 node = parse_vmess(u)
             else:
                 # 简易通用解析
-                ps = unquote(u.split('#')[-1]) if '#' in url else ""
+                ps = unquote(u.split('#')[-1]) if '#' in u else ""
                 host_match = re.search(r'@([^:/#\?\s]+)', u)
                 host = host_match.group(1) if host_match else ""
                 region = get_region_code(ps, host)
                 if region:
-                    node = {'id': f'node_{hash(u)%1000000}', 'name': ps, 'countryCode': region, 'protocol': u.split('://')[0], 'configUrl': u, 'config': {'add': host, 'port': '443'}}
+                    node = {
+                        'id': f'node_{hash(u) % 1000000}',
+                        'name': ps,
+                        'country': region,
+                        'countryCode': region,
+                        'protocol': u.split('://')[0],
+                        'configUrl': u,
+                        'config': {'add': host, 'port': '443'}
+                    }
                     parsed_nodes.append(node)
-                continue
-            if node: parsed_nodes.append(node)
-
-        # 测速、排序、导出（格式与要求完全一致）
-        print(f"安全获取到节点: {len(parsed_nodes)} 个")
-        # ... (此处省略测速逻辑以节省空间，参考前文)
+                    continue
+                else:
+                    node = None
+            
+            if node:
+                parsed_nodes.append(node)
         
-        # 导出 nodes.json ...
-        # (保持原有的 json.dump 和 xor_encrypt 逻辑)
+        print(f"安全获取到节点: {len(parsed_nodes)} 个")
+        
+        # 导出 nodes.json
+        output = {
+            "data": xor_encrypt(json.dumps(parsed_nodes, ensure_ascii=False), ENCRYPTION_KEY) if ENABLE_ENCRYPTION else base64.b64encode(json.dumps(parsed_nodes, ensure_ascii=False).encode()).decode(),
+            "count": len(parsed_nodes),
+            "timestamp": str(time.time()),
+            "encrypted": ENABLE_ENCRYPTION,
+            "version": "2.0"
+        }
+        
+        with open('nodes.json', 'w', encoding='utf-8') as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+        
+        print(f"✅ 已导出到 nodes.json")
+        print(f"加密状态: {'已加密(XOR)' if ENABLE_ENCRYPTION else '仅Base64编码'}")
 
 if __name__ == "__main__":
     asyncio.run(main())
