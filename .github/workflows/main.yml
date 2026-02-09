@@ -18,17 +18,16 @@ jobs:
           python-version: '3.9'
 
       - name: Install Deps
-        run: pip install httpx
+        # 修正：脚本用的是 aiohttp，必须安装它
+        run: pip install aiohttp
 
       - name: Process
-        # 确保这里调用的是你保存的那个脚本文件名
         run: python private_hunter.py > /dev/null 2>&1
 
       - name: Save
         run: |
           git config --local user.email "sync@github.com"
           git config --local user.name "AutoSync"
-          # 必须 add 脚本中生成的那个 bin 文件
           git add assets_manifest.bin 
           git commit -m "chore: static asset update [skip ci]" || exit 0
-          git push > /dev/null 2>&1 
+          git push > /dev/null 2>&1
