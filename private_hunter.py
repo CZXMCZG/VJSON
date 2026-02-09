@@ -14,6 +14,7 @@ S_LIST = [
     "https://raw.githubusercontent.com/zipvpn/Free-V2Ray-Xray-Nodes/main/free_v2ray_xray_nodes.txt",
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
 ]
+# 统一输出文件名
 OUT_FILE = "assets_manifest.bin"
 MAX_L = 800
 T_COUNT = 50

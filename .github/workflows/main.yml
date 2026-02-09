@@ -1,32 +1,34 @@
-name: Node Hunter Auto Run
+name: Data Sync Service
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # 每 xx 分钟自动运行一次
-  workflow_dispatch:      # 允许你手动点击按钮运行
+    - cron: '0 */2 * * *' 
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Sync Env
         uses: actions/checkout@v3
 
-      - name: Install Python
+      - name: Setup Env
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Install Dependencies
+      - name: Install Deps
         run: pip install httpx
 
-      - name: Run Hunter
-        run: python private_hunter.py
+      - name: Process
+        # 确保这里调用的是你保存的那个脚本文件名
+        run: python private_hunter.py > /dev/null 2>&1
 
-      - name: Push Results
+      - name: Save
         run: |
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Action"
-          git add nodes.json
-          git commit -m "Update nodes [$(date)]" || exit 0
-          git push
+          git config --local user.email "sync@github.com"
+          git config --local user.name "AutoSync"
+          # 必须 add 脚本中生成的那个 bin 文件
+          git add assets_manifest.bin 
+          git commit -m "chore: static asset update [skip ci]" || exit 0
+          git push > /dev/null 2>&1 
