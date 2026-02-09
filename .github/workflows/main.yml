@@ -1,33 +1,33 @@
-name: Data Sync Service
+name: Elite Node Hunter
 
 on:
   schedule:
-    - cron: '0 */2 * * *' 
+    - cron: '0 */4 * * *' 
   workflow_dispatch:
 
 jobs:
-  build:
+  hunt:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync Env
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Setup Env
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
-      - name: Install Deps
-        # 修正：脚本用的是 aiohttp，必须安装它
-        run: pip install aiohttp
-
-      - name: Process
-        run: python private_hunter.py > /dev/null 2>&1
-
-      - name: Save
+      - name: Install Tools
         run: |
-          git config --local user.email "sync@github.com"
-          git config --local user.name "AutoSync"
-          git add assets_manifest.bin 
-          git commit -m "chore: static asset update [skip ci]" || exit 0
+          pip install aiohttp PyYAML
+
+      - name: Run Hunter
+        run: python elite_hunter.py > /dev/null 2>&1
+
+      - name: Deliver
+        run: |
+          git config --local user.email "hunter@github.com"
+          git config --local user.name "EliteHunter"
+          git add assets_manifest.bin
+          git commit -m "update elite assets [skip ci]" || exit 0
           git push > /dev/null 2>&1
