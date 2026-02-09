@@ -1,14 +1,12 @@
-import requests
+import asyncio
+import aiohttp
 import base64
 import yaml
 import re
 import sys
-import urllib3
 from urllib.parse import unquote
 
-# 禁用SSL警告，防止日志刷屏
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-# 强制UTF-8
+# 强制使用 UTF-8 编码
 sys.stdout.reconfigure(encoding='utf-8')
 
 SRC = [
@@ -31,7 +29,9 @@ def g_vl(p):
         
         if p.get('tls'):
             pm += "&security=tls"
-            if p.get('servername'): pm += f"&sni={p['servername']}"
+            if p.get('servername'): 
+                pm += f"&sni={p['servername']}"
+            
             if p.get('reality-opts'):
                 r = p['reality-opts']
                 pb = r.get('public-key', '')
@@ -58,58 +58,65 @@ def g_hy2(p):
     except:
         return None
 
-def fetch_source(url):
-    print(f"Fetch: {url}")
+async def f_s(ses, u):
     try:
-        # 使用 requests，设置verify=False提高成功率
-        resp = requests.get(url, timeout=30, verify=False)
-        if resp.status_code != 200: return []
-        text = resp.text
-        ns = []
-        
-        try:
-            d = yaml.safe_load(text)
-            if isinstance(d, dict) and 'proxies' in d:
-                for p in d['proxies']:
-                    if p['type'] == 'vless':
-                        l = g_vl(p)
-                        if l: ns.append(l)
-                    elif p['type'] == 'hysteria2':
-                        l = g_hy2(p)
-                        if l: ns.append(l)
-        except: pass
-
-        if not ns:
-            try: 
-                dc = base64.b64decode(text).decode('utf-8', errors='ignore')
-                text = dc
-            except: pass
+        async with ses.get(u, timeout=30) as r:
+            if r.status != 200: 
+                return []
+            t = await r.text()
+            ns = []
             
-            vr = re.findall(r'vless://[^#]+security=reality[^#]+', text)
-            h2 = re.findall(r'(?:hysteria2|hy2)://[^\s\n]+', text)
-            ns.extend(vr)
-            ns.extend(h2)
-        return ns
-    except Exception as e:
-        print(f"Err: {e}")
+            # 策略A: YAML解析
+            try:
+                d = yaml.safe_load(t)
+                if isinstance(d, dict) and 'proxies' in d:
+                    for p in d['proxies']:
+                        if p['type'] == 'vless':
+                            l = g_vl(p)
+                            if l: ns.append(l)
+                        elif p['type'] == 'hysteria2':
+                            l = g_hy2(p)
+                            if l: ns.append(l)
+            except:
+                pass
+
+            # 策略B: 正则兜底
+            if not ns:
+                try: 
+                    dc = base64.b64decode(t).decode('utf-8', errors='ignore')
+                    t = dc
+                except: 
+                    pass
+                
+                vr = re.findall(r'vless://[^#]+security=reality[^#]+', t)
+                h2 = re.findall(r'(?:hysteria2|hy2)://[^\s\n]+', t)
+                ns.extend(vr)
+                ns.extend(h2)
+            
+            return ns
+    except:
         return []
 
-def main():
-    print("Start Hunting...")
-    all_nodes = []
-    for url in SRC:
-        nodes = fetch_source(url)
-        all_nodes.extend(nodes)
+async def main():
+    async with aiohttp.ClientSession() as s:
+        ts = [f_s(s, u) for u in SRC]
+        rs = await asyncio.gather(*ts)
     
-    unique_nodes = list(set(all_nodes))
-    print(f"Got {len(unique_nodes)} unique nodes")
+    an = []
+    for r in rs:
+        an.extend(r)
     
-    if unique_nodes:
-        fs = "\n".join(unique_nodes)
+    un = list(set(an))
+    if un:
+        fs = "\n".join(un)
         bo = base64.b64encode(fs.encode('utf-8')).decode('utf-8')
         with open(OF, "w", encoding="utf-8") as f:
             f.write(bo)
-        print("Saved.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except Exception:
+        sys.exit(0)

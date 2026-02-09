@@ -18,18 +18,20 @@ jobs:
           python-version: '3.10'
 
       - name: Install Tools
+        # 修正依赖安装命令，防止找不到包
         run: |
           pip install --upgrade pip
-          pip install requests pyyaml
+          pip install aiohttp pyyaml
 
       - name: Run Hunter
-        # ⚠️ 注意：这里去掉了 > /dev/null，为了能看到报错
-        run: python elite_hunter.py
+        # 确保文件名一致
+        run: python private_hunter.py > /dev/null 2>&1
 
       - name: Deliver
         run: |
           git config --local user.email "hunter@github.com"
           git config --local user.name "EliteHunter"
           git add assets_manifest.bin
+          # 防止无变更时报错
           git commit -m "update elite assets [skip ci]" || exit 0
-          git push
+          git push > /dev/null 2>&1
