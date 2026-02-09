@@ -3,7 +3,11 @@ import aiohttp
 import base64
 import yaml
 import re
+import sys
 from urllib.parse import unquote
+
+# 强制使用 UTF-8 编码
+sys.stdout.reconfigure(encoding='utf-8')
 
 SRC = [
     "https://raw.githubusercontent.com/anaer/Sub/main/clash.yaml",
@@ -22,9 +26,12 @@ def g_vl(p):
         pt = p.get('port')
         n = p.get('name', 'VLESS')
         pm = f"?security={p.get('cipher', 'auto')}&type={p.get('network', 'tcp')}"
+        
         if p.get('tls'):
             pm += "&security=tls"
-            if p.get('servername'): pm += f"&sni={p['servername']}"
+            if p.get('servername'): 
+                pm += f"&sni={p['servername']}"
+            
             if p.get('reality-opts'):
                 r = p['reality-opts']
                 pb = r.get('public-key', '')
@@ -32,6 +39,7 @@ def g_vl(p):
                 sid = r.get('short-id', '')
                 if pb:
                     pm += f"&security=reality&pbk={pb}&fp={fp}&sid={sid}&sni={p.get('servername','')}"
+        
         if 'security=reality' in pm or 'security=tls' in pm:
             return f"vless://{u}@{s}:{pt}{pm}#{unquote(str(n))}"
         return None
@@ -53,9 +61,12 @@ def g_hy2(p):
 async def f_s(ses, u):
     try:
         async with ses.get(u, timeout=30) as r:
-            if r.status != 200: return []
+            if r.status != 200: 
+                return []
             t = await r.text()
             ns = []
+            
+            # 策略A: YAML解析
             try:
                 d = yaml.safe_load(t)
                 if isinstance(d, dict) and 'proxies' in d:
@@ -68,15 +79,20 @@ async def f_s(ses, u):
                             if l: ns.append(l)
             except:
                 pass
+
+            # 策略B: 正则兜底
             if not ns:
                 try: 
                     dc = base64.b64decode(t).decode('utf-8', errors='ignore')
                     t = dc
-                except: pass
+                except: 
+                    pass
+                
                 vr = re.findall(r'vless://[^#]+security=reality[^#]+', t)
                 h2 = re.findall(r'(?:hysteria2|hy2)://[^\s\n]+', t)
                 ns.extend(vr)
                 ns.extend(h2)
+            
             return ns
     except:
         return []
@@ -85,9 +101,11 @@ async def main():
     async with aiohttp.ClientSession() as s:
         ts = [f_s(s, u) for u in SRC]
         rs = await asyncio.gather(*ts)
+    
     an = []
     for r in rs:
         an.extend(r)
+    
     un = list(set(an))
     if un:
         fs = "\n".join(un)
@@ -98,5 +116,7 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except:
-        pass
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except Exception:
+        sys.exit(0)
