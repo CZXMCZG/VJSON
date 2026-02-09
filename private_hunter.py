@@ -1,84 +1,97 @@
 import asyncio
-import httpx
+import aiohttp
 import base64
-import re
 import json
+import re
 import time
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
-S_LIST = [
+TR = ['hk', 'hongkong', 'tw', 'taiwan', 'jp', 'japan', 'sg', 'singapore', 'us', 'usa', 'united states']
+SRC = [
     "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt",
-    "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/Sub1.txt",
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt",
-    "https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/main/all_extracted_configs.txt",
-    "https://raw.githubusercontent.com/zipvpn/Free-V2Ray-Xray-Nodes/main/free_v2ray_xray_nodes.txt",
+    "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt",
+    "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/EternityAir",
+    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/normal/mix",
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
 ]
-# 统一输出文件名
-OUT_FILE = "assets_manifest.bin"
-MAX_L = 800
-T_COUNT = 50
-Z_D = {'1': ['hk', 'hongkong', '香港', '港'], '2': ['tw', 'taiwan', '台湾', '台'], '3': ['jp', 'japan', '日本', '日'], '4': ['sg', 'singapore', '新加坡', '新']}
+OF = "assets_manifest.bin"
+TO = 3.0
 
-async def _v(sem, link):
+def p_n(l):
     try:
-        protocol = link.split('://')[0]
-        h, p = "", 80
-        if protocol == 'vmess':
-            c = json.loads(base64.b64decode(link.split('://')[1]).decode('utf-8', 'ignore'))
-            h, p = c.get('add'), c.get('port')
+        s, r = l.split('://', 1)
+        h, pt, ps = None, None, ''
+        if s == 'vmess':
+            mp = len(r) % 4
+            if mp: r += '=' * (4 - mp)
+            d = json.loads(base64.b64decode(r).decode('utf-8'))
+            h = d.get('add')
+            pt = d.get('port')
+            ps = d.get('ps', '')
         else:
-            u = urlparse(link if '://' in link else f"http://{link}")
-            h, p = u.hostname, u.port or (443 if protocol in ['vless', 'trojan', 'hy2'] else 80)
-        
-        if not h: return None
-        
-        async with sem:
-            latencies = []
-            for _ in range(2):
-                t1 = time.perf_counter()
-                f = asyncio.open_connection(h, int(p))
-                _, w = await asyncio.wait_for(f, timeout=1.0)
-                latencies.append((time.perf_counter() - t1) * 1000)
-                w.close()
-                await w.wait_closed()
-            
-            avg = sum(latencies) / 2
-            jit = abs(latencies[0] - latencies[1])
-            return {"l": link, "s": avg + (jit * 2)}
+            if '#' in r:
+                r, ps = r.split('#', 1)
+                ps = unquote(ps)
+            if '@' in r:
+                _, sp = r.split('@', 1)
+            else:
+                sp = r
+            if ':' in sp:
+                m = re.search(r'\[?([^\]]+)\]?:(\d+)', sp)
+                if m:
+                    h = m.group(1)
+                    pt = m.group(2)
+                if h and '?' in h:
+                    h = h.split('?')[0]
+        return {'l': l, 'h': h, 'pt': int(pt) if pt else 443, 'ps': ps}
     except:
         return None
 
-async def _run():
-    async with httpx.AsyncClient(follow_redirects=True, verify=False) as c:
-        tasks = [c.get(u, timeout=15.0) for u in S_LIST]
-        resps = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        raw = []
-        for r in resps:
-            if hasattr(r, 'text') and r.status_code == 200:
-                txt = r.text
-                if "://" not in txt[:50]:
-                    try: txt = base64.b64decode(txt.strip()).decode('utf-8', 'ignore')
-                    except: pass
-                raw.extend(re.findall(r'(?:vmess|vless|trojan|ss|ssr|hy2|hysteria2)://[^\s|#|"\']+', txt))
+async def c_n(sem, n):
+    if not n or not n['h']: return None
+    pl = n['ps'].lower() if n['ps'] else ''
+    if not any(k in pl for k in TR):
+        return None
+    async with sem:
+        try:
+            st = time.time()
+            c = asyncio.open_connection(n['h'], n['pt'])
+            _, w = await asyncio.wait_for(c, timeout=TO)
+            lat = (time.time() - st) * 1000
+            w.close()
+            await w.wait_closed()
+            return {'l': n['l'], 'lat': lat}
+        except:
+            return None
 
-        pool = list(set(raw))
-        candidates = [l for l in pool if any(kw in unquote(l).lower() for kws in Z_D.values() for kw in kws)]
-        
-        sem = asyncio.Semaphore(MAX_L)
-        v_tasks = [_v(sem, l) for l in candidates]
-        results = await asyncio.gather(*v_tasks)
-        
-        valid = sorted([r for r in results if r], key=lambda x: x['s'])[:T_COUNT]
-        if not valid: return
-        
-        out = base64.b64encode("\n".join([r['l'] for r in valid]).encode()).decode()
-        with open(OUT_FILE, "w") as f:
-            f.write(out)
+async def m():
+    al = []
+    async with aiohttp.ClientSession() as s:
+        for u in SRC:
+            try:
+                async with s.get(u, timeout=15) as r:
+                    t = await r.text()
+                    try: c = base64.b64decode(t).decode('utf-8', errors='ignore')
+                    except: c = t
+                    lks = re.findall(r'(?:vmess|vless|trojan|ss|ssr|hy2)://[^\s\n]+', c)
+                    al.extend(lks)
+            except: pass
+    ul = list(set(al))
+    pn = []
+    for l in ul:
+        i = p_n(l)
+        if i: pn.append(i)
+    sem = asyncio.Semaphore(200)
+    tsk = [c_n(sem, n) for n in pn]
+    res = await asyncio.gather(*tsk)
+    vn = [r for r in res if r is not None]
+    vn.sort(key=lambda x: x['lat'])
+    tp = vn[:50]
+    if tp:
+        fc = "\n".join([n['l'] for n in tp])
+        bd = base64.b64encode(fc.encode('utf-8')).decode('utf-8')
+        with open(OF, "w", encoding="utf-8") as f:
+            f.write(bd)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(_run())
-    except:
-        pass
+    asyncio.run(m())
